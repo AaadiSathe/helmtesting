@@ -28,6 +28,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: List Available Namespaces
+        run: |
+          echo "Available namespaces:"
+          kubectl get namespaces -o custom-columns=NAME:.metadata.name
+
       - name: Set Deployment Variables
         run: |
           RELEASE_NAME=${{ github.event.inputs.environment }}-${{ github.event.inputs.service_name }}
@@ -47,6 +52,9 @@ jobs:
               exit 1
             fi
           elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
+            echo "Available rollback revisions for release: $RELEASE_NAME"
+            helm history $RELEASE_NAME --output yaml | yq e '.[] | .revision + " - " + .status' -
+            
             if [ -z "${{ github.event.inputs.revision }}" ]; then
               latest_successful_revision=$(helm history $RELEASE_NAME --max 1 --output json | jq -r '.[0].revision')
               echo "No revision specified, rolling back to last successful revision: $latest_successful_revision"
