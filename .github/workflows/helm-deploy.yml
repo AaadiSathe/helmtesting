@@ -1,28 +1,67 @@
 name: Deploy to Kind with Helm
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Choose action: upgrade or rollback'
+        required: true
+        default: 'upgrade'
+        type: choice
+        options:
+          - upgrade
+          - rollback
+      release_name:
+        description: 'Release name (required for rollback)'
+        required: false
+      revision:
+        description: 'Revision number (optional for rollback, defaults to last successful)'
+        required: false
 
 jobs:
   deploy:
-    runs-on: self-hosted  # Changed from ubuntu-latest to self-hosted
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Setup Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: '1.20'
-
-      - name: Deploy Helm charts
+      - name: Deploy or Rollback Helm charts
         run: |
-          for chart in ./helm/*/; do
-            if [ -d "$chart" ]; then
-              chart_name=$(basename "$chart")
-              echo "Deploying chart: $chart_name"
-              helm upgrade --install $chart_name $chart --create-namespace --namespace $chart_name
+          if [ "${{ github.event.inputs.action }}" == "upgrade" ]; then
+            for chart in ./helm/*/; do
+              if [ -d "$chart" ]; then
+                chart_name=$(basename "$chart")
+                echo "Deploying/upgrading chart: $chart_name"
+                helm upgrade --install $chart_name $chart --create-namespace --namespace $chart_name
+              fi
+            done
+          elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
+            if [ -z "${{ github.event.inputs.release_name }}" ]; then
+              echo "Release name is required for rollback!"
+              exit 1
             fi
-          done
+            
+            # Get last successful revision if not provided
+            if [ -z "${{ github.event.inputs.revision }}" ]; then
+              latest_successful_revision=$(helm history ${{ github.event.inputs.release_name }} --max 1 --output json | jq -r '.[0].revision')
+              echo "No revision specified, rolling back to last successful revision: $latest_successful_revision"
+            else
+              latest_successful_revision=${{ github.event.inputs.revision }}
+            fi
+            
+            if [ -z "$latest_successful_revision" ]; then
+              echo "Could not determine last successful revision!"
+              exit 1
+            fi
+            
+            echo "Rolling back release: ${{ github.event.inputs.release_name }} to revision $latest_successful_revision"
+            helm rollback ${{ github.event.inputs.release_name }} $latest_successful_revision
+            
+            # Log rollback history
+            helm history ${{ github.event.inputs.release_name }}
+          fi
+
+      - name: Notify on Rollback Failure
+        if: failure()
+        run: |
+          echo "Rollback failed for release: ${{ github.event.inputs.release_name }}"
