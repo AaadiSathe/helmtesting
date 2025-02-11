@@ -7,7 +7,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted  # Changed from ubuntu-latest to self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -16,21 +16,6 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: '1.20'
-
-      - name: Install Kind
-        run: |
-          go install sigs.k8s.io/kind@latest
-          kind create cluster
-
-      - name: Install Helm
-        uses: azure/setup-helm@v3
-        with:
-          version: 'latest'
-
-      - name: Configure kubectl
-        run: |
-          kind get kubeconfig > $HOME/.kube/config
-          kubectl cluster-info
 
       - name: Deploy Helm charts
         run: |
@@ -41,4 +26,3 @@ jobs:
               helm upgrade --install $chart_name $chart --create-namespace --namespace $chart_name
             fi
           done
-
