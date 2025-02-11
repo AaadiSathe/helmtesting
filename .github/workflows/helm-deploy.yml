@@ -11,9 +11,12 @@ on:
         options:
           - upgrade
           - rollback
-      release_name:
-        description: 'Release name (required for rollback)'
-        required: false
+      environment:
+        description: 'Deployment environment (e.g., dev, staging, prod)'
+        required: true
+      service_name:
+        description: 'Service name to deploy or rollback'
+        required: true
       revision:
         description: 'Revision number (optional for rollback, defaults to last successful)'
         required: false
@@ -25,25 +28,27 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Set Deployment Variables
+        run: |
+          RELEASE_NAME=${{ github.event.inputs.environment }}-${{ github.event.inputs.service_name }}
+          NAMESPACE=${{ github.event.inputs.environment }}
+          echo "RELEASE_NAME=$RELEASE_NAME" >> $GITHUB_ENV
+          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_ENV
+
       - name: Deploy or Rollback Helm charts
         run: |
           if [ "${{ github.event.inputs.action }}" == "upgrade" ]; then
-            for chart in ./helm/*/; do
-              if [ -d "$chart" ]; then
-                chart_name=$(basename "$chart")
-                echo "Deploying/upgrading chart: $chart_name"
-                helm upgrade --install $chart_name $chart --create-namespace --namespace $chart_name
-              fi
-            done
-          elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
-            if [ -z "${{ github.event.inputs.release_name }}" ]; then
-              echo "Release name is required for rollback!"
+            CHART_PATH=./helm/${{ github.event.inputs.service_name }}
+            if [ -d "$CHART_PATH" ]; then
+              echo "Deploying/upgrading chart: $RELEASE_NAME in namespace: $NAMESPACE"
+              helm upgrade --install $RELEASE_NAME $CHART_PATH --create-namespace --namespace $NAMESPACE
+            else
+              echo "Chart directory $CHART_PATH not found!"
               exit 1
             fi
-            
-            # Get last successful revision if not provided
+          elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
             if [ -z "${{ github.event.inputs.revision }}" ]; then
-              latest_successful_revision=$(helm history ${{ github.event.inputs.release_name }} --max 1 --output json | jq -r '.[0].revision')
+              latest_successful_revision=$(helm history $RELEASE_NAME --max 1 --output json | jq -r '.[0].revision')
               echo "No revision specified, rolling back to last successful revision: $latest_successful_revision"
             else
               latest_successful_revision=${{ github.event.inputs.revision }}
@@ -54,14 +59,14 @@ jobs:
               exit 1
             fi
             
-            echo "Rolling back release: ${{ github.event.inputs.release_name }} to revision $latest_successful_revision"
-            helm rollback ${{ github.event.inputs.release_name }} $latest_successful_revision
+            echo "Rolling back release: $RELEASE_NAME to revision $latest_successful_revision"
+            helm rollback $RELEASE_NAME $latest_successful_revision
             
             # Log rollback history
-            helm history ${{ github.event.inputs.release_name }}
+            helm history $RELEASE_NAME
           fi
 
       - name: Notify on Rollback Failure
         if: failure()
         run: |
-          echo "Rollback failed for release: ${{ github.event.inputs.release_name }}"
+          echo "Rollback failed for release: $RELEASE_NAME"
