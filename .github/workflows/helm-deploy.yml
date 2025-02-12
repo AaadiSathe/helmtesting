@@ -35,13 +35,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Install yq
-        run: |
-          echo "Installing yq..."
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-          sudo chmod +x /usr/local/bin/yq
-          yq --version  # Verify installation
-
       - name: Set Deployment Variables
         run: |
           RELEASE_NAME=${{ github.event.inputs.environment }}-${{ github.event.inputs.service_name }}
