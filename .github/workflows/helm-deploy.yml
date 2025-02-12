@@ -79,8 +79,25 @@ jobs:
               -f "$CHART_PATH/values.yaml"
 
           elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
-            helm rollback $RELEASE_NAME ${{ github.event.inputs.revision || '$(helm history $RELEASE_NAME --max 1 --output json | jq -r '.[0].revision')' }}
+            echo "Checking available rollback revisions for release: $RELEASE_NAME"
+            helm history $RELEASE_NAME
 
+            if [ -z "${{ github.event.inputs.revision }}" ]; then
+              latest_successful_revision=$(helm history $RELEASE_NAME --max 1 --output json | jq -r '.[0].revision')
+              echo "No revision specified, rolling back to last successful revision: $latest_successful_revision"
+            else
+              latest_successful_revision=${{ github.event.inputs.revision }}
+            fi
+
+            if [ -z "$latest_successful_revision" ]; then
+              echo "Could not determine last successful revision!"
+              exit 1
+            fi
+
+            echo "Rolling back release: $RELEASE_NAME to revision $latest_successful_revision"
+            helm rollback $RELEASE_NAME $latest_successful_revision
+
+            echo "Updated rollback history:"
             helm history $RELEASE_NAME
           fi
 
