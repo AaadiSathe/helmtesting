@@ -35,10 +35,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: List Available Namespaces
+      - name: Install yq
         run: |
-          echo "Available namespaces:"
-          kubectl get namespaces -o custom-columns=NAME:.metadata.name
+          echo "Installing yq..."
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version  # Verify installation
 
       - name: Set Deployment Variables
         run: |
@@ -50,16 +52,10 @@ jobs:
           echo "NAMESPACE=$NAMESPACE" >> $GITHUB_ENV
           echo "CHART_PATH=$CHART_PATH" >> $GITHUB_ENV
 
-          echo "Deployment Variables Set:"
-          echo "  - RELEASE_NAME: $RELEASE_NAME"
-          echo "  - NAMESPACE: $NAMESPACE"
-          echo "  - CHART_PATH: $CHART_PATH"
-
       - name: Verify values.yaml exists
         run: |
           if [ ! -f "$CHART_PATH/values.yaml" ]; then
             echo "Error: values.yaml not found in $CHART_PATH!"
-            echo "Listing files in $CHART_PATH for debugging:"
             ls -l "$CHART_PATH"
             exit 1
           fi
@@ -77,33 +73,14 @@ jobs:
       - name: Deploy or Rollback Helm charts
         run: |
           if [ "${{ github.event.inputs.action }}" == "upgrade" ]; then
-            echo "Deploying/upgrading chart: $RELEASE_NAME in namespace: $NAMESPACE"
-            
             helm upgrade --install $RELEASE_NAME $CHART_PATH \
               --create-namespace --namespace $NAMESPACE \
               --version ${{ github.event.inputs.chart_version }} \
               -f "$CHART_PATH/values.yaml"
 
           elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
-            echo "Checking available rollback revisions for release: $RELEASE_NAME"
-            helm history $RELEASE_NAME --output yaml | yq e '.[] | .revision + " - " + .status' -
+            helm rollback $RELEASE_NAME ${{ github.event.inputs.revision || '$(helm history $RELEASE_NAME --max 1 --output json | jq -r '.[0].revision')' }}
 
-            if [ -z "${{ github.event.inputs.revision }}" ]; then
-              latest_successful_revision=$(helm history $RELEASE_NAME --max 1 --output json | jq -r '.[0].revision')
-              echo "No revision specified, rolling back to last successful revision: $latest_successful_revision"
-            else
-              latest_successful_revision=${{ github.event.inputs.revision }}
-            fi
-
-            if [ -z "$latest_successful_revision" ]; then
-              echo "Could not determine last successful revision!"
-              exit 1
-            fi
-
-            echo "Rolling back release: $RELEASE_NAME to revision $latest_successful_revision"
-            helm rollback $RELEASE_NAME $latest_successful_revision
-
-            echo "Updated rollback history:"
             helm history $RELEASE_NAME
           fi
 
