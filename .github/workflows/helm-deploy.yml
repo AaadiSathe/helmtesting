@@ -17,6 +17,7 @@ on:
       service_name:
         description: 'Service name to deploy or rollback'
         required: true
+        default: 'sample-app'
       chart_version:
         description: 'Helm chart version to use (e.g., 0.1.0)'
         required: true
@@ -43,36 +44,48 @@ jobs:
         run: |
           RELEASE_NAME=${{ github.event.inputs.environment }}-${{ github.event.inputs.service_name }}
           NAMESPACE=${{ github.event.inputs.environment }}
-          CHART_PATH=./helm/${{ github.event.inputs.service_name }}
+          CHART_PATH="./helm/sample-app"
+
           echo "RELEASE_NAME=$RELEASE_NAME" >> $GITHUB_ENV
           echo "NAMESPACE=$NAMESPACE" >> $GITHUB_ENV
           echo "CHART_PATH=$CHART_PATH" >> $GITHUB_ENV
 
+          echo "Deployment Variables Set:"
+          echo "  - RELEASE_NAME: $RELEASE_NAME"
+          echo "  - NAMESPACE: $NAMESPACE"
+          echo "  - CHART_PATH: $CHART_PATH"
+
+      - name: Verify values.yaml exists
+        run: |
+          if [ ! -f "$CHART_PATH/values.yaml" ]; then
+            echo "Error: values.yaml not found in $CHART_PATH!"
+            echo "Listing files in $CHART_PATH for debugging:"
+            ls -l "$CHART_PATH"
+            exit 1
+          fi
+
       - name: Set chart version and image tag in values.yaml
         run: |
           echo "Setting chart version and image tag in values.yaml"
-          if [ -f "$CHART_PATH/values.yaml" ]; then
-            # Modify the values.yaml to set the new chart version and image tag
-            yq e ".version = \"${{ github.event.inputs.chart_version }}\"" -i "$CHART_PATH/values.yaml"
-            yq e ".image.tag = \"${{ github.event.inputs.app_image_tag }}\"" -i "$CHART_PATH/values.yaml"
-            cat "$CHART_PATH/values.yaml"  # Verify the changes
-          else
-            echo "values.yaml not found in chart directory!"
-            exit 1
-          fi
+          
+          yq e ".version = \"${{ github.event.inputs.chart_version }}\"" -i "$CHART_PATH/values.yaml"
+          yq e ".image.tag = \"${{ github.event.inputs.app_image_tag }}\"" -i "$CHART_PATH/values.yaml"
+
+          echo "Updated values.yaml:"
+          cat "$CHART_PATH/values.yaml"
 
       - name: Deploy or Rollback Helm charts
         run: |
           if [ "${{ github.event.inputs.action }}" == "upgrade" ]; then
-            if [ -d "$CHART_PATH" ]; then
-              echo "Deploying/upgrading chart: $RELEASE_NAME in namespace: $NAMESPACE with chart version: ${{ github.event.inputs.chart_version }} and app image tag: ${{ github.event.inputs.app_image_tag }}"
-              helm upgrade --install $RELEASE_NAME $CHART_PATH --create-namespace --namespace $NAMESPACE --version ${{ github.event.inputs.chart_version }} -f "$CHART_PATH/values.yaml"
-            else
-              echo "Chart directory $CHART_PATH not found!"
-              exit 1
-            fi
+            echo "Deploying/upgrading chart: $RELEASE_NAME in namespace: $NAMESPACE"
+            
+            helm upgrade --install $RELEASE_NAME $CHART_PATH \
+              --create-namespace --namespace $NAMESPACE \
+              --version ${{ github.event.inputs.chart_version }} \
+              -f "$CHART_PATH/values.yaml"
+
           elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
-            echo "Available rollback revisions for release: $RELEASE_NAME"
+            echo "Checking available rollback revisions for release: $RELEASE_NAME"
             helm history $RELEASE_NAME --output yaml | yq e '.[] | .revision + " - " + .status' -
 
             if [ -z "${{ github.event.inputs.revision }}" ]; then
@@ -90,7 +103,7 @@ jobs:
             echo "Rolling back release: $RELEASE_NAME to revision $latest_successful_revision"
             helm rollback $RELEASE_NAME $latest_successful_revision
 
-            # Log rollback history
+            echo "Updated rollback history:"
             helm history $RELEASE_NAME
           fi
 
