@@ -20,6 +20,9 @@ on:
       release_name:
         description: 'Helm release name'
         required: true
+      namespace:
+        description: 'Kubernetes namespace'
+        required: true
       revision:
         description: 'Revision number (only for rollback)'
         required: false
@@ -38,7 +41,7 @@ jobs:
           echo "RELEASE_NAME=${{ github.event.inputs.release_name }}" >> $GITHUB_ENV
           echo "CHART_VERSION=${{ github.event.inputs.chart_version }}" >> $GITHUB_ENV
           echo "IMAGE_TAG=${{ github.event.inputs.app_image_tag }}" >> $GITHUB_ENV
-          echo "NAMESPACE=default" >> $GITHUB_ENV
+          echo "NAMESPACE=${{ github.event.inputs.namespace }}" >> $GITHUB_ENV
 
       - name: Ensure Namespace Exists
         run: |
