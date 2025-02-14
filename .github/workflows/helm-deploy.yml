@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'Choose action: upgrade or rollback'
+        description: 'Choose action: upgrade, rollback, or update-image'
         required: true
         default: 'upgrade'
         type: choice
         options:
           - upgrade
           - rollback
+          - update-image
       chart_version:
         description: 'Helm chart version to use (e.g., 0.1.0)'
         required: false
@@ -95,6 +96,11 @@ jobs:
             echo "Updated rollback history:"
             helm history "$RELEASE_NAME" --namespace "$NAMESPACE"
           fi
+
+      - name: Update Image Without Redeploying
+        if: github.event.inputs.action == 'update-image'
+        run: |
+          kubectl set image deployment/$RELEASE_NAME $RELEASE_NAME-container=your-image:$IMAGE_TAG -n $NAMESPACE
 
       - name: Verify Deployment
         if: github.event.inputs.action == 'upgrade'
