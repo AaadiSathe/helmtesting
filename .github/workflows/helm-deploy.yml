@@ -38,6 +38,13 @@ jobs:
           echo "RELEASE_NAME=${{ github.event.inputs.release_name }}" >> $GITHUB_ENV
           echo "CHART_VERSION=${{ github.event.inputs.chart_version }}" >> $GITHUB_ENV
           echo "IMAGE_TAG=${{ github.event.inputs.app_image_tag }}" >> $GITHUB_ENV
+          echo "NAMESPACE=default" >> $GITHUB_ENV
+
+      - name: Ensure Namespace Exists
+        run: |
+          if ! kubectl get namespace "$NAMESPACE" &>/dev/null; then
+            kubectl create namespace "$NAMESPACE"
+          fi
 
       - name: Verify Helm Chart Exists
         run: |
@@ -50,21 +57,27 @@ jobs:
             exit 1
           fi
 
-      - name: Update values.yaml with Chart Version and Image Tag (Upgrade Only)
+      - name: Validate Helm Chart
+        run: |
+          helm lint "$CHART_PATH"
+
+      - name: Create Helm Override File
         if: github.event.inputs.action == 'upgrade'
         run: |
-          yq e ".version = \"$CHART_VERSION\"" -i "$CHART_PATH/values.yaml"
-          yq e ".image.tag = \"$IMAGE_TAG\"" -i "$CHART_PATH/values.yaml"
-          echo "Updated values.yaml:" 
-          cat "$CHART_PATH/values.yaml"
+          cat <<EOF > override-values.yaml
+          version: "$CHART_VERSION"
+          image:
+            tag: "$IMAGE_TAG"
+          EOF
 
       - name: Deploy or Rollback Helm Chart
         run: |
           if [ "${{ github.event.inputs.action }}" == "upgrade" ]; then
             helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" \
-              --namespace default \
+              --namespace "$NAMESPACE" \
               --version "$CHART_VERSION" \
-              -f "$CHART_PATH/values.yaml"
+              -f override-values.yaml
+            helm history "$RELEASE_NAME" -o json > ./helm_revisions.json
           elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
             if [ -z "${{ github.event.inputs.revision }}" ]; then
               latest_successful_revision=$(helm history "$RELEASE_NAME" --max 1 --output json | jq -r '.[0].revision')
@@ -85,4 +98,10 @@ jobs:
       - name: Verify Deployment
         if: github.event.inputs.action == 'upgrade'
         run: |
-          helm list --namespace default
+          helm list --namespace "$NAMESPACE"
+
+      - name: Notify on Failure
+        if: failure()
+        run: |
+          echo "Deployment failed for release: $RELEASE_NAME"
+          # Add Slack or Teams notification integration
