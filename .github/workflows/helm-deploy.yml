@@ -17,6 +17,7 @@ on:
       service_name:
         description: 'Service name to deploy or rollback'
         required: true
+        default: 'sample-app'
       chart_version:
         description: 'Helm chart version to use (e.g., 0.1.0)'
         required: true
@@ -30,77 +31,59 @@ on:
 jobs:
   deploy:
     runs-on: self-hosted
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
-      - name: List Available Namespaces
-        run: |
-          echo "Available namespaces:"
-          kubectl get namespaces -o custom-columns=NAME:.metadata.name
 
       - name: Set Deployment Variables
         run: |
           RELEASE_NAME=${{ github.event.inputs.environment }}-${{ github.event.inputs.service_name }}
           NAMESPACE=${{ github.event.inputs.environment }}
-          CHART_PATH=./helm/${{ github.event.inputs.service_name }}
+          CHART_PATH="./helm/sample-app"
           echo "RELEASE_NAME=$RELEASE_NAME" >> $GITHUB_ENV
           echo "NAMESPACE=$NAMESPACE" >> $GITHUB_ENV
           echo "CHART_PATH=$CHART_PATH" >> $GITHUB_ENV
-
+      - name: Verify values.yaml exists
+        run: |
+          if [ ! -f "$CHART_PATH/values.yaml" ]; then
+            echo "Error: values.yaml not found in $CHART_PATH!"
+            ls -l "$CHART_PATH"
+            exit 1
+          fi
       - name: Set chart version and image tag in values.yaml
         run: |
           echo "Setting chart version and image tag in values.yaml"
-          if [ -f "$CHART_PATH/values.yaml" ]; then
-            yq e ".version = \"${{ github.event.inputs.chart_version }}\"" -i "$CHART_PATH/values.yaml"
-            yq e ".image.tag = \"${{ github.event.inputs.app_image_tag }}\"" -i "$CHART_PATH/values.yaml"
-            echo "Updated values.yaml:"
-            cat "$CHART_PATH/values.yaml"
-          else
-            echo "Error: values.yaml not found in $CHART_PATH!"
-            exit 1
-          fi
-
+          
+          yq e ".version = \"${{ github.event.inputs.chart_version }}\"" -i "$CHART_PATH/values.yaml"
+          yq e ".image.tag = \"${{ github.event.inputs.app_image_tag }}\"" -i "$CHART_PATH/values.yaml"
+          echo "Updated values.yaml:"
+          cat "$CHART_PATH/values.yaml"
       - name: Deploy or Rollback Helm charts
         run: |
           if [ "${{ github.event.inputs.action }}" == "upgrade" ]; then
-            echo "Upgrading or installing Helm release: $RELEASE_NAME"
             helm upgrade --install $RELEASE_NAME $CHART_PATH \
               --create-namespace --namespace $NAMESPACE \
               --version ${{ github.event.inputs.chart_version }} \
               -f "$CHART_PATH/values.yaml"
-
           elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
-            echo "Checking if Helm release $RELEASE_NAME exists..."
-            if ! helm status $RELEASE_NAME &> /dev/null; then
-              echo "Error: Helm release $RELEASE_NAME not found! Cannot rollback."
-              exit 1
-            fi
-
             echo "Checking available rollback revisions for release: $RELEASE_NAME"
             helm history $RELEASE_NAME
-
             if [ -z "${{ github.event.inputs.revision }}" ]; then
               latest_successful_revision=$(helm history $RELEASE_NAME --max 1 --output json | jq -r '.[0].revision')
               echo "No revision specified, rolling back to last successful revision: $latest_successful_revision"
             else
               latest_successful_revision=${{ github.event.inputs.revision }}
             fi
-
             if [ -z "$latest_successful_revision" ]; then
-              echo "Error: Could not determine last successful revision!"
+              echo "Could not determine last successful revision!"
               exit 1
             fi
-
             echo "Rolling back release: $RELEASE_NAME to revision $latest_successful_revision"
             helm rollback $RELEASE_NAME $latest_successful_revision
-
             echo "Updated rollback history:"
             helm history $RELEASE_NAME
           fi
-
       - name: Notify on Rollback Failure
         if: failure()
         run: |
-          echo "⚠️ Rollback failed for release: $RELEASE_NAME"
+          echo "Rollback failed for release: $RELEASE_NAME"
