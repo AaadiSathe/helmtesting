@@ -1,130 +1,58 @@
-name: Deploy to Kind with Helm
+name: Deploy Helm Chart Locally
 
 on:
   workflow_dispatch:
     inputs:
-      action:
-        description: 'Choose action: upgrade or rollback'
-        required: true
-        default: 'upgrade'
-        type: choice
-        options:
-          - upgrade
-          - rollback
-      environment:
-        description: 'Deployment environment (e.g., dev, staging, prod)'
-        required: true
-      service_name:
-        description: 'Service name to deploy or rollback'
-        required: true
       chart_version:
-        description: 'Helm chart version to use (e.g., 0.1.0) (Required for upgrade)'
-        required: false
+        description: 'Helm chart version to use (e.g., 0.1.0)'
+        required: true
       app_image_tag:
-        description: 'App Docker image tag (e.g., 1.17.0) (Required for upgrade)'
-        required: false
-      revision:
-        description: 'Revision number (optional for rollback, defaults to last successful)'
-        required: false
+        description: 'App Docker image tag (e.g., 1.17.0)'
+        required: true
+      release_name:
+        description: 'Helm release name'
+        required: true
 
 jobs:
   deploy:
     runs-on: self-hosted
     steps:
-      - name: Checkout code
+      - name: Checkout Repository
         uses: actions/checkout@v3
 
       - name: Set Deployment Variables
         run: |
-          RELEASE_NAME="${{ github.event.inputs.environment }}-${{ github.event.inputs.service_name }}"
-          NAMESPACE="${{ github.event.inputs.environment }}"
-          CHART_PATH="./helm/${{ github.event.inputs.service_name }}"
-          REVISION_FILE="./helm_revisions.json"
-          
-          echo "RELEASE_NAME=$RELEASE_NAME" >> $GITHUB_ENV
-          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_ENV
+          CHART_PATH="./helm/sample-app"
           echo "CHART_PATH=$CHART_PATH" >> $GITHUB_ENV
-          echo "REVISION_FILE=$REVISION_FILE" >> $GITHUB_ENV
+          echo "RELEASE_NAME=${{ github.event.inputs.release_name }}" >> $GITHUB_ENV
+          echo "CHART_VERSION=${{ github.event.inputs.chart_version }}" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${{ github.event.inputs.app_image_tag }}" >> $GITHUB_ENV
 
-      - name: Create Namespace if Not Exists
+      - name: Verify Helm Chart Exists
         run: |
-          if ! kubectl get namespace $NAMESPACE &> /dev/null; then
-            echo "Namespace $NAMESPACE does not exist. Creating..."
-            kubectl create namespace $NAMESPACE
-          else
-            echo "Namespace $NAMESPACE already exists."
+          if [ ! -d "$CHART_PATH" ]; then
+            echo "Error: Helm chart directory not found at $CHART_PATH!"
+            exit 1
           fi
-
-      - name: Verify values.yaml exists
-        run: |
           if [ ! -f "$CHART_PATH/values.yaml" ]; then
             echo "Error: values.yaml not found in $CHART_PATH!"
-            ls -l "$CHART_PATH"
             exit 1
           fi
 
-      - name: Set chart version and image tag in values.yaml (if upgrading)
-        if: github.event.inputs.action == 'upgrade'
+      - name: Update values.yaml with Chart Version and Image Tag
         run: |
-          echo "Setting chart version and image tag in values.yaml"
-          yq e ".version = \"${{ github.event.inputs.chart_version }}\"" -i "$CHART_PATH/values.yaml"
-          yq e ".image.tag = \"${{ github.event.inputs.app_image_tag }}\"" -i "$CHART_PATH/values.yaml"
-          echo "Updated values.yaml:"
+          yq e ".version = \"$CHART_VERSION\"" -i "$CHART_PATH/values.yaml"
+          yq e ".image.tag = \"$IMAGE_TAG\"" -i "$CHART_PATH/values.yaml"
+          echo "Updated values.yaml:" 
           cat "$CHART_PATH/values.yaml"
 
-      - name: Deploy or Rollback Helm charts
+      - name: Deploy Helm Chart
         run: |
-          if [ "${{ github.event.inputs.action }}" == "upgrade" ]; then
-            echo "Starting Helm upgrade..."
-            helm upgrade --install $RELEASE_NAME $CHART_PATH \
-              --create-namespace --namespace $NAMESPACE \
-              --version ${{ github.event.inputs.chart_version }} \
-              -f "$CHART_PATH/values.yaml" || { 
-                echo "Upgrade failed! Attempting rollback...";
-                latest_successful_revision=$(helm history $RELEASE_NAME --output json | jq -r '[.[] | select(.status=="deployed")] | last | .revision')
-                if [ -n "$latest_successful_revision" ]; then
-                  helm rollback $RELEASE_NAME $latest_successful_revision
-                else
-                  echo "No successful revision found to rollback to."
-                  exit 1
-                fi
-              }
-            
-            # Store revisions in file for future use
-            helm history $RELEASE_NAME --output json | jq '.' > $REVISION_FILE
+          helm upgrade --install $RELEASE_NAME $CHART_PATH \
+            --namespace default \
+            --version $CHART_VERSION \
+            -f "$CHART_PATH/values.yaml"
 
-          elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
-            echo "Fetching available rollback revisions for release: $RELEASE_NAME"
-            
-            # Ensure revision file exists before proceeding
-            if [ ! -f "$REVISION_FILE" ]; then
-              echo "No previous revisions found. Fetching from Helm history..."
-              helm history $RELEASE_NAME --output json | jq '.' > $REVISION_FILE
-            fi
-
-            cat $REVISION_FILE | jq '.'
-
-            if [ -z "${{ github.event.inputs.revision }}" ]; then
-              latest_successful_revision=$(jq -r '[.[] | select(.status=="deployed")] | last | .revision' $REVISION_FILE)
-              echo "No revision specified, rolling back to last successful revision: $latest_successful_revision"
-            else
-              latest_successful_revision=${{ github.event.inputs.revision }}
-            fi
-
-            if [ -z "$latest_successful_revision" ]; then
-              echo "Could not determine a revision to rollback to!"
-              exit 1
-            fi
-
-            echo "Rolling back release: $RELEASE_NAME to revision $latest_successful_revision"
-            helm rollback $RELEASE_NAME $latest_successful_revision
-            
-            # Update stored revisions after rollback
-            helm history $RELEASE_NAME --output json | jq '.' > $REVISION_FILE
-            echo "Updated rollback history:"
-            cat $REVISION_FILE | jq '.'
-
-      - name: Notify on Rollback Failure
-        if: failure()
+      - name: Verify Deployment
         run: |
-          echo "Rollback failed for release: $RELEASE_NAME"
+          helm list --namespace default
