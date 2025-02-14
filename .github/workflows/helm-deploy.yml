@@ -17,7 +17,6 @@ on:
       service_name:
         description: 'Service name to deploy or rollback'
         required: true
-        default: 'sample-app'
       chart_version:
         description: 'Helm chart version to use (e.g., 0.1.0) (Required for upgrade)'
         required: false
@@ -39,10 +38,22 @@ jobs:
         run: |
           RELEASE_NAME="${{ github.event.inputs.environment }}-${{ github.event.inputs.service_name }}"
           NAMESPACE="${{ github.event.inputs.environment }}"
-          CHART_PATH="./helm/sample-app"
+          CHART_PATH="./helm/${{ github.event.inputs.service_name }}"
+          REVISION_FILE="./helm_revisions.json"
+          
           echo "RELEASE_NAME=$RELEASE_NAME" >> $GITHUB_ENV
           echo "NAMESPACE=$NAMESPACE" >> $GITHUB_ENV
           echo "CHART_PATH=$CHART_PATH" >> $GITHUB_ENV
+          echo "REVISION_FILE=$REVISION_FILE" >> $GITHUB_ENV
+
+      - name: Create Namespace if Not Exists
+        run: |
+          if ! kubectl get namespace $NAMESPACE &> /dev/null; then
+            echo "Namespace $NAMESPACE does not exist. Creating..."
+            kubectl create namespace $NAMESPACE
+          else
+            echo "Namespace $NAMESPACE already exists."
+          fi
 
       - name: Verify values.yaml exists
         run: |
@@ -78,13 +89,23 @@ jobs:
                   exit 1
                 fi
               }
-          
+            
+            # Store revisions in file for future use
+            helm history $RELEASE_NAME --output json | jq '.' > $REVISION_FILE
+
           elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
-            echo "Checking available rollback revisions for release: $RELEASE_NAME"
-            helm history $RELEASE_NAME
+            echo "Fetching available rollback revisions for release: $RELEASE_NAME"
+            
+            # Ensure revision file exists before proceeding
+            if [ ! -f "$REVISION_FILE" ]; then
+              echo "No previous revisions found. Fetching from Helm history..."
+              helm history $RELEASE_NAME --output json | jq '.' > $REVISION_FILE
+            fi
+
+            cat $REVISION_FILE | jq '.'
 
             if [ -z "${{ github.event.inputs.revision }}" ]; then
-              latest_successful_revision=$(helm history $RELEASE_NAME --output json | jq -r '[.[] | select(.status=="deployed")] | last | .revision')
+              latest_successful_revision=$(jq -r '[.[] | select(.status=="deployed")] | last | .revision' $REVISION_FILE)
               echo "No revision specified, rolling back to last successful revision: $latest_successful_revision"
             else
               latest_successful_revision=${{ github.event.inputs.revision }}
@@ -97,9 +118,11 @@ jobs:
 
             echo "Rolling back release: $RELEASE_NAME to revision $latest_successful_revision"
             helm rollback $RELEASE_NAME $latest_successful_revision
+            
+            # Update stored revisions after rollback
+            helm history $RELEASE_NAME --output json | jq '.' > $REVISION_FILE
             echo "Updated rollback history:"
-            helm history $RELEASE_NAME
-          fi
+            cat $REVISION_FILE | jq '.'
 
       - name: Notify on Rollback Failure
         if: failure()
