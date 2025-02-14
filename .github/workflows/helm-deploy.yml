@@ -14,14 +14,18 @@ on:
       environment:
         description: 'Deployment environment (e.g., dev, staging, prod)'
         required: true
+      service_name:
+        description: 'Service name to deploy or rollback'
+        required: true
+        default: 'sample-app'
       chart_version:
-        description: 'Helm chart version to use (e.g., 0.1.0)'
-        required: true
+        description: 'Helm chart version to use (e.g., 0.1.0) (Required for upgrade)'
+        required: false
       app_image_tag:
-        description: 'App Docker image tag (e.g., 1.17.0)'
-        required: true
+        description: 'App Docker image tag (e.g., 1.17.0) (Required for upgrade)'
+        required: false
       revision:
-        description: 'Revision number (required for rollback)'
+        description: 'Revision number (optional for rollback, defaults to last successful)'
         required: false
 
 jobs:
@@ -33,28 +37,71 @@ jobs:
 
       - name: Set Deployment Variables
         run: |
-          RELEASE_NAME="${{ github.event.inputs.environment }}-sample-app"
+          RELEASE_NAME="${{ github.event.inputs.environment }}-${{ github.event.inputs.service_name }}"
           NAMESPACE="${{ github.event.inputs.environment }}"
           CHART_PATH="./helm/sample-app"
           echo "RELEASE_NAME=$RELEASE_NAME" >> $GITHUB_ENV
           echo "NAMESPACE=$NAMESPACE" >> $GITHUB_ENV
           echo "CHART_PATH=$CHART_PATH" >> $GITHUB_ENV
 
-      - name: Update image tag in values.yaml
+      - name: Verify values.yaml exists
         run: |
-          yq e ".image.tag = \"${{ github.event.inputs.app_image_tag }}\"" -i "$CHART_PATH/values.yaml"
+          if [ ! -f "$CHART_PATH/values.yaml" ]; then
+            echo "Error: values.yaml not found in $CHART_PATH!"
+            ls -l "$CHART_PATH"
+            exit 1
+          fi
 
-      - name: Execute Helm Action
+      - name: Set chart version and image tag in values.yaml (if upgrading)
+        if: github.event.inputs.action == 'upgrade'
+        run: |
+          echo "Setting chart version and image tag in values.yaml"
+          yq e ".version = \"${{ github.event.inputs.chart_version }}\"" -i "$CHART_PATH/values.yaml"
+          yq e ".image.tag = \"${{ github.event.inputs.app_image_tag }}\"" -i "$CHART_PATH/values.yaml"
+          echo "Updated values.yaml:"
+          cat "$CHART_PATH/values.yaml"
+
+      - name: Deploy or Rollback Helm charts
         run: |
           if [ "${{ github.event.inputs.action }}" == "upgrade" ]; then
+            echo "Starting Helm upgrade..."
             helm upgrade --install $RELEASE_NAME $CHART_PATH \
               --create-namespace --namespace $NAMESPACE \
-              --version "${{ github.event.inputs.chart_version }}" \
-              -f "$CHART_PATH/values.yaml"
+              --version ${{ github.event.inputs.chart_version }} \
+              -f "$CHART_PATH/values.yaml" || { 
+                echo "Upgrade failed! Attempting rollback...";
+                latest_successful_revision=$(helm history $RELEASE_NAME --output json | jq -r '[.[] | select(.status=="deployed")] | last | .revision')
+                if [ -n "$latest_successful_revision" ]; then
+                  helm rollback $RELEASE_NAME $latest_successful_revision
+                else
+                  echo "No successful revision found to rollback to."
+                  exit 1
+                fi
+              }
+          
           elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
+            echo "Checking available rollback revisions for release: $RELEASE_NAME"
+            helm history $RELEASE_NAME
+
             if [ -z "${{ github.event.inputs.revision }}" ]; then
-              echo "Error: Revision must be specified for rollback"
+              latest_successful_revision=$(helm history $RELEASE_NAME --output json | jq -r '[.[] | select(.status=="deployed")] | last | .revision')
+              echo "No revision specified, rolling back to last successful revision: $latest_successful_revision"
+            else
+              latest_successful_revision=${{ github.event.inputs.revision }}
+            fi
+
+            if [ -z "$latest_successful_revision" ]; then
+              echo "Could not determine a revision to rollback to!"
               exit 1
             fi
-            helm rollback $RELEASE_NAME "${{ github.event.inputs.revision }}"
+
+            echo "Rolling back release: $RELEASE_NAME to revision $latest_successful_revision"
+            helm rollback $RELEASE_NAME $latest_successful_revision
+            echo "Updated rollback history:"
+            helm history $RELEASE_NAME
           fi
+
+      - name: Notify on Rollback Failure
+        if: failure()
+        run: |
+          echo "Rollback failed for release: $RELEASE_NAME"
