@@ -80,22 +80,29 @@ jobs:
               --namespace "$NAMESPACE" \
               --version "$CHART_VERSION" \
               -f override-values.yaml
-            helm history "$RELEASE_NAME" -o json > ./helm_revisions.json
+            helm history "$RELEASE_NAME" --namespace "$NAMESPACE" -o json > ./helm_revisions.json
           elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
+            if ! helm list --namespace "$NAMESPACE" -q | grep -q "^$RELEASE_NAME$"; then
+              echo "Error: Release '$RELEASE_NAME' not found. Cannot rollback."
+              exit 1
+            fi
+
             if [ -z "${{ github.event.inputs.revision }}" ]; then
-              latest_successful_revision=$(helm history "$RELEASE_NAME" --max 1 --output json | jq -r '.[0].revision')
+              latest_successful_revision=$(helm history "$RELEASE_NAME" --namespace "$NAMESPACE" --max 1 --output json | jq -r '.[0].revision')
               echo "No revision specified, rolling back to last successful revision: $latest_successful_revision"
             else
               latest_successful_revision="${{ github.event.inputs.revision }}"
             fi
+            
             if [ -z "$latest_successful_revision" ]; then
               echo "Could not determine last successful revision!"
               exit 1
             fi
+            
             echo "Rolling back release: $RELEASE_NAME to revision $latest_successful_revision"
-            helm rollback "$RELEASE_NAME" "$latest_successful_revision"
+            helm rollback "$RELEASE_NAME" "$latest_successful_revision" --namespace "$NAMESPACE"
             echo "Updated rollback history:"
-            helm history "$RELEASE_NAME"
+            helm history "$RELEASE_NAME" --namespace "$NAMESPACE"
           fi
 
       - name: Verify Deployment
