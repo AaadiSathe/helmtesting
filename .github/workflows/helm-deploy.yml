@@ -1,17 +1,28 @@
-name: Deploy Helm Chart Locally
+name: Deploy or Rollback Helm Chart Locally
 
 on:
   workflow_dispatch:
     inputs:
+      action:
+        description: 'Choose action: upgrade or rollback'
+        required: true
+        default: 'upgrade'
+        type: choice
+        options:
+          - upgrade
+          - rollback
       chart_version:
         description: 'Helm chart version to use (e.g., 0.1.0)'
-        required: true
+        required: false
       app_image_tag:
         description: 'App Docker image tag (e.g., 1.17.0)'
-        required: true
+        required: false
       release_name:
         description: 'Helm release name'
         required: true
+      revision:
+        description: 'Revision number (only for rollback)'
+        required: false
 
 jobs:
   deploy:
@@ -39,20 +50,38 @@ jobs:
             exit 1
           fi
 
-      - name: Update values.yaml with Chart Version and Image Tag
+      - name: Update values.yaml with Chart Version and Image Tag (Upgrade Only)
+        if: github.event.inputs.action == 'upgrade'
         run: |
           yq e ".version = \"$CHART_VERSION\"" -i "$CHART_PATH/values.yaml"
           yq e ".image.tag = \"$IMAGE_TAG\"" -i "$CHART_PATH/values.yaml"
           echo "Updated values.yaml:" 
           cat "$CHART_PATH/values.yaml"
 
-      - name: Deploy Helm Chart
+      - name: Deploy or Rollback Helm Chart
         run: |
-          helm upgrade --install $RELEASE_NAME $CHART_PATH \
-            --namespace default \
-            --version $CHART_VERSION \
-            -f "$CHART_PATH/values.yaml"
+          if [ "${{ github.event.inputs.action }}" == "upgrade" ]; then
+            helm upgrade --install $RELEASE_NAME $CHART_PATH \
+              --namespace default \
+              --version $CHART_VERSION \
+              -f "$CHART_PATH/values.yaml"
+          elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
+            if [ -z "${{ github.event.inputs.revision }}" ]; then
+              latest_successful_revision=$(helm history $RELEASE_NAME --max 1 --output json | jq -r '.[0].revision')
+              echo "No revision specified, rolling back to last successful revision: $latest_successful_revision"
+            else
+              latest_successful_revision=${{ github.event.inputs.revision }}
+            fi
+            if [ -z "$latest_successful_revision" ]; then
+              echo "Could not determine last successful revision!"
+              exit 1
+            fi
+            echo "Rolling back release: $RELEASE_NAME to revision $latest_successful_revision"
+            helm rollback $RELEASE_NAME $latest_successful_revision
+            echo "Updated rollback history:"
+            helm history $RELEASE_NAME
 
       - name: Verify Deployment
+        if: github.event.inputs.action == 'upgrade'
         run: |
           helm list --namespace default
