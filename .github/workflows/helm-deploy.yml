@@ -13,7 +13,7 @@ on:
           - rollback
           - update-image
       chart_version:
-        description: 'Helm chart version to use (e.g., 0.1.0)'
+        description: 'Helm chart version (ignored for local charts)'
         required: false
       app_image_tag:
         description: 'App Docker image tag (e.g., 1.17.0)'
@@ -37,12 +37,11 @@ jobs:
 
       - name: Set Deployment Variables
         run: |
-          CHART_PATH="./helm/sample-app"
-          echo "CHART_PATH=$CHART_PATH" >> $GITHUB_ENV
+          echo "CHART_PATH=./helm/sample-app" >> $GITHUB_ENV
           echo "RELEASE_NAME=${{ github.event.inputs.release_name }}" >> $GITHUB_ENV
-          echo "CHART_VERSION=${{ github.event.inputs.chart_version }}" >> $GITHUB_ENV
-          echo "IMAGE_TAG=${{ github.event.inputs.app_image_tag }}" >> $GITHUB_ENV
           echo "NAMESPACE=${{ github.event.inputs.namespace }}" >> $GITHUB_ENV
+          [ -n "${{ github.event.inputs.chart_version }}" ] && echo "CHART_VERSION=${{ github.event.inputs.chart_version }}" >> $GITHUB_ENV
+          [ -n "${{ github.event.inputs.app_image_tag }}" ] && echo "IMAGE_TAG=${{ github.event.inputs.app_image_tag }}" >> $GITHUB_ENV
 
       - name: Ensure Namespace Exists
         run: |
@@ -62,50 +61,58 @@ jobs:
           fi
 
       - name: Validate Helm Chart
-        run: |
-          helm lint "$CHART_PATH"
+        run: helm lint "$CHART_PATH"
 
       - name: Deploy or Rollback Helm Chart
         run: |
-          if [ "${{ github.event.inputs.action }}" == "upgrade" ]; then
-            helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" \
-              --namespace "$NAMESPACE" \
-              --version "$CHART_VERSION" \
-              --set image.tag="$IMAGE_TAG"
-            helm history "$RELEASE_NAME" --namespace "$NAMESPACE" -o json > ./helm_revisions.json
-          elif [ "${{ github.event.inputs.action }}" == "rollback" ]; then
-            if ! helm list --namespace "$NAMESPACE" -q | grep -q "^$RELEASE_NAME$"; then
-              echo "Error: Release '$RELEASE_NAME' not found. Cannot rollback."
-              exit 1
-            fi
-
-            if [ -z "${{ github.event.inputs.revision }}" ]; then
-              latest_successful_revision=$(helm history "$RELEASE_NAME" --namespace "$NAMESPACE" --max 1 --output json | jq -r '.[0].revision')
-              echo "No revision specified, rolling back to last successful revision: $latest_successful_revision"
-            else
-              latest_successful_revision="${{ github.event.inputs.revision }}"
-            fi
+          case "${{ github.event.inputs.action }}" in
+            upgrade)
+              HELM_CMD="helm upgrade --install $RELEASE_NAME $CHART_PATH --namespace $NAMESPACE"
+              [ -n "$IMAGE_TAG" ] && HELM_CMD="$HELM_CMD --set image.tag=$IMAGE_TAG"
+              echo "Running: $HELM_CMD"
+              eval "$HELM_CMD"
+              helm history "$RELEASE_NAME" --namespace "$NAMESPACE" -o json > ./helm_revisions.json
+              ;;
             
-            if [ -z "$latest_successful_revision" ]; then
-              echo "Could not determine last successful revision!"
-              exit 1
-            fi
-            
-            echo "Rolling back release: $RELEASE_NAME to revision $latest_successful_revision"
-            helm rollback "$RELEASE_NAME" "$latest_successful_revision" --namespace "$NAMESPACE"
-            echo "Updated rollback history:"
-            helm history "$RELEASE_NAME" --namespace "$NAMESPACE"
-          fi
+            rollback)
+              if ! helm list --namespace "$NAMESPACE" -q | grep -q "^$RELEASE_NAME$"; then
+                echo "Error: Release '$RELEASE_NAME' not found. Cannot rollback."
+                exit 1
+              fi
+              
+              if [ -z "${{ github.event.inputs.revision }}" ]; then
+                latest_revision=$(helm history "$RELEASE_NAME" --namespace "$NAMESPACE" --max 1 --output json | jq -r '.[0].revision')
+                echo "No revision specified, rolling back to last successful revision: $latest_revision"
+              else
+                latest_revision="${{ github.event.inputs.revision }}"
+              fi
+              
+              if [ -z "$latest_revision" ]; then
+                echo "Could not determine last successful revision!"
+                exit 1
+              fi
+              
+              echo "Rolling back release: $RELEASE_NAME to revision $latest_revision"
+              helm rollback "$RELEASE_NAME" "$latest_revision" --namespace "$NAMESPACE"
+              helm history "$RELEASE_NAME" --namespace "$NAMESPACE"
+              ;;
+          esac
 
       - name: Update Image Without Redeploying
         if: github.event.inputs.action == 'update-image'
         run: |
-          kubectl set image deployment/$RELEASE_NAME $RELEASE_NAME-container=your-image:$IMAGE_TAG -n $NAMESPACE
+          DEPLOYMENT_NAME=$(kubectl get deployment -n "$NAMESPACE" -o jsonpath="{.items[?(@.metadata.name=='$RELEASE_NAME')].metadata.name}")
+          if [ -z "$DEPLOYMENT_NAME" ]; then
+            echo "Error: Deployment $RELEASE_NAME not found in namespace $NAMESPACE"
+            exit 1
+          fi
+          
+          CONTAINER_NAME=$(kubectl get deployment "$DEPLOYMENT_NAME" -n "$NAMESPACE" -o jsonpath="{.spec.template.spec.containers[0].name}")
+          kubectl set image deployment/"$DEPLOYMENT_NAME" "$CONTAINER_NAME"=your-image:"$IMAGE_TAG" -n "$NAMESPACE"
 
       - name: Verify Deployment
         if: github.event.inputs.action == 'upgrade'
-        run: |
-          helm list --namespace "$NAMESPACE"
+        run: helm list --namespace "$NAMESPACE"
 
       - name: Notify on Failure
         if: failure()
