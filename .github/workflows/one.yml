@@ -1,0 +1,81 @@
+name: Terraform From Scratch Locally
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Choose action: apply or destroy'
+        required: true
+        default: 'apply'
+        type: choice
+        options:
+          - apply
+          - destroy
+
+jobs:
+  terraform:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Install Terraform
+        run: |
+          if ! command -v terraform &> /dev/null; then
+            echo "Installing Terraform..."
+            curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
+            sudo apt-add-repository --yes --update "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+            sudo apt-get install terraform -y
+          else
+            echo "Terraform is already installed."
+          fi
+          terraform --version
+
+      - name: Create Terraform Directory
+        run: |
+          mkdir -p terraform_local
+          cd terraform_local
+
+          # Create a simple Terraform script
+          cat <<EOF > main.tf
+          terraform {
+            required_providers {
+              local = {
+                source  = "hashicorp/local"
+                version = "~> 2.0"
+              }
+            }
+          }
+
+          provider "local" {}
+
+          resource "local_file" "example" {
+            content  = "Hello from Terraform!"
+            filename = "terraform_output.txt"
+          }
+          EOF
+
+          echo "Terraform script created in terraform_local/main.tf"
+
+      - name: Initialize Terraform
+        run: |
+          cd terraform_local
+          terraform init
+
+      - name: Apply Terraform Configuration
+        if: github.event.inputs.action == 'apply'
+        run: |
+          cd terraform_local
+          terraform apply -auto-approve
+
+      - name: Destroy Terraform Configuration
+        if: github.event.inputs.action == 'destroy'
+        run: |
+          cd terraform_local
+          terraform destroy -auto-approve
+
+      - name: Notify on Failure
+        if: failure()
+        run: |
+          echo "Terraform execution failed!"
+          # Add Slack or Teams notification integration
